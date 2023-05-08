@@ -1,22 +1,6 @@
-/***************************************************************************************
-* Copyright (c) 2014-2022 Zihao Yu, Nanjing University
-*
-* NEMU is licensed under Mulan PSL v2.
-* You can use this software according to the terms and conditions of the Mulan PSL v2.
-* You may obtain a copy of Mulan PSL v2 at:
-*          http://license.coscl.org.cn/MulanPSL2
-*
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-*
-* See the Mulan PSL v2 for more details.
-***************************************************************************************/
-
 // from NEMU
 #include <memory/paddr.h>
-#include <isa-def.h>
-#include <difftest-def.h>
+#include <isa/x86.h>
 
 #include <fcntl.h>
 #include <errno.h>
@@ -52,8 +36,8 @@ struct vcpu {
 
 enum {
   STATE_IDLE,      // if encounter an int instruction, then set watchpoint
-  STATE_INT_INST, // if hit the watchpoint, then delete the watchpoint
-  STATE_IRET_INST,// if hit the watchpoint, then delete the watchpoint
+  STATE_INT_INSTR, // if hit the watchpoint, then delete the watchpoint
+  STATE_IRET_INSTR,// if hit the watchpoint, then delete the watchpoint
 };
 
 static struct vm vm;
@@ -68,6 +52,13 @@ static void kvm_set_step_mode(bool watch, uint32_t watch_addr) {
   debug.arch.debugreg[7] = (watch ? 0x1 : 0x0); // watch instruction fetch at `watch_addr`
   if (ioctl(vcpu.fd, KVM_SET_GUEST_DEBUG, &debug) < 0) {
     perror("KVM_SET_GUEST_DEBUG");
+    assert(0);
+  }
+}
+
+static inline void kvm_getregs(struct kvm_regs *r) {
+  if (ioctl(vcpu.fd, KVM_GET_REGS, r) < 0) {
+    perror("KVM_GET_REGS");
     assert(0);
   }
 }
@@ -219,7 +210,7 @@ static void setup_protected_mode(struct kvm_sregs *sregs) {
   sregs->ds = sregs->es = sregs->fs = sregs->gs = sregs->ss = seg;
 }
 
-static uint64_t va2pa(uint64_t va) {
+static inline uint64_t va2pa(uint64_t va) {
   if (vcpu.kvm_run->s.regs.sregs.cr0 & CR0_PG) {
     struct kvm_translation t = { .linear_address = va };
     int ret = ioctl(vcpu.fd, KVM_TRANSLATE, &t);
@@ -229,12 +220,12 @@ static uint64_t va2pa(uint64_t va) {
   return va;
 }
 
-static int patching() {
+static inline int patching() {
   // patching for special instructions
   uint32_t pc = va2pa(vcpu.kvm_run->s.regs.regs.rip);
   if (pc == 0xffffffff) return 0;
   if (vm.mem[pc] == 0x9c) {  // pushf
-    if (vcpu.int_wp_state == STATE_INT_INST) return 0;
+    if (vcpu.int_wp_state == STATE_INT_INSTR) return 0;
     vcpu.kvm_run->s.regs.regs.rsp -= 4;
     uint32_t esp = va2pa(vcpu.kvm_run->s.regs.regs.rsp);
     *(uint32_t *)(vm.mem + esp) = vcpu.kvm_run->s.regs.regs.rflags & ~RFLAGS_FIX_MASK;
@@ -244,7 +235,7 @@ static int patching() {
     return 1;
   }
   else if (vm.mem[pc] == 0x9d) {  // popf
-    if (vcpu.int_wp_state == STATE_INT_INST) return 0;
+    if (vcpu.int_wp_state == STATE_INT_INSTR) return 0;
     uint32_t esp = va2pa(vcpu.kvm_run->s.regs.regs.rsp);
     vcpu.kvm_run->s.regs.regs.rflags = *(uint32_t *)(vm.mem + esp) | RFLAGS_TF | 2;
     vcpu.kvm_run->s.regs.regs.rsp += 4;
@@ -257,18 +248,18 @@ static int patching() {
     uint32_t eip = *(uint32_t *)(vm.mem + ret_addr);
     vcpu.entry = eip;
     kvm_set_step_mode(true, eip);
-    vcpu.int_wp_state = STATE_IRET_INST;
+    vcpu.int_wp_state = STATE_IRET_INSTR;
     return 0;
   }
   return 0;
 }
 
-static void fix_push_sreg() {
+static inline void fix_push_sreg() {
   uint32_t esp = va2pa(vcpu.kvm_run->s.regs.regs.rsp);
   *(uint32_t *)(vm.mem + esp) &= 0x0000ffff;
 }
 
-static void patching_after(uint64_t last_pc) {
+static inline void patching_after(uint64_t last_pc) {
   uint32_t pc = va2pa(last_pc);
   if (pc == 0xffffffff) return;
   uint8_t opcode = vm.mem[pc];
@@ -306,7 +297,7 @@ static void kvm_exec(uint64_t n) {
       assert(0);
     } else {
       patching_after(pc);
-      if (vcpu.int_wp_state == STATE_INT_INST) {
+      if (vcpu.int_wp_state == STATE_INT_INSTR) {
         uint32_t eflag_offset = 8 + (vcpu.has_error_code ? 4 : 0);
         uint32_t eflag_addr = va2pa(vcpu.kvm_run->s.regs.regs.rsp + eflag_offset);
         *(uint32_t *)(vm.mem + eflag_addr) &= ~RFLAGS_FIX_MASK;
@@ -317,7 +308,7 @@ static void kvm_exec(uint64_t n) {
         vcpu.int_wp_state = STATE_IDLE;
       //Log("exception = %d, pc = %llx, dr6 = %llx, dr7 = %llx", vcpu.kvm_run->debug.arch.exception,
       //    vcpu.kvm_run->debug.arch.pc, vcpu.kvm_run->debug.arch.dr6, vcpu.kvm_run->debug.arch.dr7);
-      } else if (vcpu.int_wp_state == STATE_IRET_INST) {
+      } else if (vcpu.int_wp_state == STATE_IRET_INSTR) {
         Assert(vcpu.entry == vcpu.kvm_run->debug.arch.pc,
             "entry not match, right = 0x%llx, wrong = 0x%x", vcpu.kvm_run->debug.arch.pc, vcpu.entry);
         kvm_set_step_mode(false, 0);
@@ -345,51 +336,53 @@ static void run_protected_mode() {
   kvm_exec(10);
 }
 
-__EXPORT void difftest_memcpy(paddr_t addr, void *buf, size_t n, bool direction) {
-  if (direction == DIFFTEST_TO_REF) memcpy(vm.mem + addr, buf, n);
-  else memcpy(buf, vm.mem + addr, n);
+void difftest_memcpy_from_dut(paddr_t dest, void *src, size_t n) {
+  memcpy(vm.mem + dest, src, n);
 }
 
-__EXPORT void difftest_regcpy(void *r, bool direction) {
+void difftest_getregs(void *r) {
   struct kvm_regs *ref = &(vcpu.kvm_run->s.regs.regs);
   x86_CPU_state *x86 = r;
-  if (direction == DIFFTEST_TO_REF) {
-    ref->rax = x86->eax;
-    ref->rbx = x86->ebx;
-    ref->rcx = x86->ecx;
-    ref->rdx = x86->edx;
-    ref->rsp = x86->esp;
-    ref->rbp = x86->ebp;
-    ref->rsi = x86->esi;
-    ref->rdi = x86->edi;
-    ref->rip = x86->pc;
-    ref->rflags |= RFLAGS_TF;
-    vcpu.kvm_run->kvm_dirty_regs = KVM_SYNC_X86_REGS;
-  } else {
-    x86->eax = ref->rax;
-    x86->ebx = ref->rbx;
-    x86->ecx = ref->rcx;
-    x86->edx = ref->rdx;
-    x86->esp = ref->rsp;
-    x86->ebp = ref->rbp;
-    x86->esi = ref->rsi;
-    x86->edi = ref->rdi;
-    x86->pc  = ref->rip;
-  }
+  x86->eax = ref->rax;
+  x86->ebx = ref->rbx;
+  x86->ecx = ref->rcx;
+  x86->edx = ref->rdx;
+  x86->esp = ref->rsp;
+  x86->ebp = ref->rbp;
+  x86->esi = ref->rsi;
+  x86->edi = ref->rdi;
+  x86->pc  = ref->rip;
 }
 
-__EXPORT void difftest_exec(uint64_t n) {
+void difftest_setregs(const void *r) {
+  struct kvm_regs *ref = &(vcpu.kvm_run->s.regs.regs);
+  const x86_CPU_state *x86 = r;
+  ref->rax = x86->eax;
+  ref->rbx = x86->ebx;
+  ref->rcx = x86->ecx;
+  ref->rdx = x86->edx;
+  ref->rsp = x86->esp;
+  ref->rbp = x86->ebp;
+  ref->rsi = x86->esi;
+  ref->rdi = x86->edi;
+  ref->rip = x86->pc;
+  ref->rflags |= RFLAGS_TF;
+
+  vcpu.kvm_run->kvm_dirty_regs = KVM_SYNC_X86_REGS;
+}
+
+void difftest_exec(uint64_t n) {
   kvm_exec(n);
 }
 
-__EXPORT void difftest_raise_intr(word_t NO) {
+void difftest_raise_intr(word_t NO) {
   uint32_t pgate_vaddr = vcpu.kvm_run->s.regs.sregs.idt.base + NO * 8;
   uint32_t pgate = va2pa(pgate_vaddr);
   // assume code.base = 0
   uint32_t entry = vm.mem[pgate] | (vm.mem[pgate + 1] << 8) |
     (vm.mem[pgate + 6] << 16) | (vm.mem[pgate + 7] << 24);
   kvm_set_step_mode(true, entry);
-  vcpu.int_wp_state = STATE_INT_INST;
+  vcpu.int_wp_state = STATE_INT_INSTR;
   vcpu.has_error_code = (NO == 14);
   vcpu.entry = entry;
 
@@ -401,8 +394,8 @@ __EXPORT void difftest_raise_intr(word_t NO) {
   }
 }
 
-__EXPORT void difftest_init(int port) {
-  vm_init(CONFIG_MSIZE);
+void difftest_init(int port) {
+  vm_init(PMEM_SIZE);
   vcpu_init();
   run_protected_mode();
 }

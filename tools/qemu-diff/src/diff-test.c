@@ -1,22 +1,7 @@
-/***************************************************************************************
-* Copyright (c) 2014-2022 Zihao Yu, Nanjing University
-*
-* NEMU is licensed under Mulan PSL v2.
-* You can use this software according to the terms and conditions of the Mulan PSL v2.
-* You may obtain a copy of Mulan PSL v2 at:
-*          http://license.coscl.org.cn/MulanPSL2
-*
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-*
-* See the Mulan PSL v2 for more details.
-***************************************************************************************/
-
 #include "common.h"
-#include <difftest-def.h>
 #include <sys/prctl.h>
 #include <signal.h>
+#include _ISA_H_
 
 bool gdb_connect_qemu(int);
 bool gdb_memcpy_to_qemu(uint32_t, void *, int);
@@ -27,30 +12,29 @@ void gdb_exit();
 
 void init_isa();
 
-__EXPORT void difftest_memcpy(paddr_t addr, void *buf, size_t n, bool direction) {
-  assert(direction == DIFFTEST_TO_REF);
-  if (direction == DIFFTEST_TO_REF) {
-    bool ok = gdb_memcpy_to_qemu(addr, buf, n);
-    assert(ok == 1);
-  }
+void difftest_memcpy_from_dut(paddr_t dest, void *src, size_t n) {
+  bool ok = gdb_memcpy_to_qemu(dest, src, n);
+  assert(ok == 1);
 }
 
-__EXPORT void difftest_regcpy(void *dut, bool direction) {
+void difftest_getregs(void *r) {
   union isa_gdb_regs qemu_r;
   gdb_getregs(&qemu_r);
-  if (direction == DIFFTEST_TO_REF) {
-    memcpy(&qemu_r, dut, DIFFTEST_REG_SIZE);
-    gdb_setregs(&qemu_r);
-  } else {
-    memcpy(dut, &qemu_r, DIFFTEST_REG_SIZE);
-  }
+  memcpy(r, &qemu_r, DIFFTEST_REG_SIZE);
 }
 
-__EXPORT void difftest_exec(uint64_t n) {
+void difftest_setregs(const void *r) {
+  union isa_gdb_regs qemu_r;
+  gdb_getregs(&qemu_r);
+  memcpy(&qemu_r, r, DIFFTEST_REG_SIZE);
+  gdb_setregs(&qemu_r);
+}
+
+void difftest_exec(uint64_t n) {
   while (n --) gdb_si();
 }
 
-__EXPORT void difftest_init(int port) {
+void difftest_init(int port) {
   char buf[32];
   sprintf(buf, "tcp::%d", port);
 
@@ -76,8 +60,7 @@ __EXPORT void difftest_init(int port) {
     }
 
     close(STDIN_FILENO);
-    execlp(ISA_QEMU_BIN, ISA_QEMU_BIN, ISA_QEMU_ARGS "-S", "-gdb", buf, "-nographic",
-        "-serial", "none", "-monitor", "none", NULL);
+    execlp(ISA_QEMU_BIN, ISA_QEMU_BIN, ISA_QEMU_ARGS "-S", "-gdb", buf, "-nographic", NULL);
     perror("exec");
     assert(0);
   }
@@ -91,9 +74,4 @@ __EXPORT void difftest_init(int port) {
 
     init_isa();
   }
-}
-
-__EXPORT void difftest_raise_intr(uint64_t NO) {
-  printf("raise_intr is not supported\n");
-  assert(0);
 }

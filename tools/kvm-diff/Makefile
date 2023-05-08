@@ -1,23 +1,46 @@
-#***************************************************************************************
-# Copyright (c) 2014-2022 Zihao Yu, Nanjing University
-#
-# NEMU is licensed under Mulan PSL v2.
-# You can use this software according to the terms and conditions of the Mulan PSL v2.
-# You may obtain a copy of Mulan PSL v2 at:
-#          http://license.coscl.org.cn/MulanPSL2
-#
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-#
-# See the Mulan PSL v2 for more details.
-#**************************************************************************************/
+ifneq ($(MAKECMDGOALS),clean) # ignore check for make clean
+ISA ?= x86
 
-NAME  = x86-kvm
-SRCS  = $(shell find src/ -name "*.c")
+ifneq ($(ISA),x86) # ISA must be valid
+$(error Only support x86)
+endif
+endif
 
-SHARE = 1
-INC_PATH += $(NEMU_HOME)/include $(NEMU_HOME)/src/isa/x86/include
-GUEST_ISA = x86
+INC_DIR += ./include $(NEMU_HOME)/include
+BUILD_DIR ?= ./build
+OBJ_DIR ?= $(BUILD_DIR)/obj-$(ISA)
+BINARY ?= $(BUILD_DIR)/$(ISA)-kvm-so
 
-include $(NEMU_HOME)/scripts/build.mk
+.DEFAULT_GOAL = app
+
+# Compilation flags
+CC = gcc
+LD = gcc
+INCLUDES  = $(addprefix -I, $(INC_DIR))
+CFLAGS   += -O2 -fPIC -MMD -Wall -Werror -DNEMU_HOME=$(NEMU_HOME) $(INCLUDES)
+
+# Files to be compiled
+SRCS = $(shell find src/ -name "*.c")
+OBJS = $(SRCS:src/%.c=$(OBJ_DIR)/%.o)
+
+# Compilation patterns
+$(OBJ_DIR)/%.o: src/%.c
+	@echo + CC $<
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS)  -c -o $@ $<
+
+
+# Depencies
+-include $(OBJS:.o=.d)
+
+# Some convinient rules
+
+.PHONY: app clean
+app: $(BINARY)
+
+$(BINARY): $(OBJS)
+	@echo + LD $@
+	@$(LD) -O2 -rdynamic -shared -fPIC -o $@ $^
+
+clean: 
+	-rm -rf $(BUILD_DIR)

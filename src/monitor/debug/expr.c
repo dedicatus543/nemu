@@ -171,13 +171,13 @@ word_t eval(p, q) {
     case '+':
       return val1 + val2;
       break;
-    case '-': /* ... */
+    case '-':
       return val1 - val2;
       break;
-    case '*': /* ... */
+    case '*':
       return val1 * val2;
       break;
-    case '/': /* ... */
+    case '/':
       return val1 / val2;
       break;
     default:
